@@ -11,13 +11,10 @@ variable "resource_group_name" {
 }
 
 variable "tags" {
-  description = "Common tags applied to all resources"
+  description = "Common tags applied to all resources. Must include 'environment'."
   type        = map(string)
-  default = {
-    project     = "visium-usecase"
-    environment = "dev"
-    managed_by  = "terraform"
-  }
+  # No default — must be set per environment in terraform.tfvars
+  # to avoid prod accidentally being tagged as dev.
 }
 
 variable "tenant_id" {
@@ -38,6 +35,11 @@ variable "keyvault_private_dns_zone_id" {
 
 variable "storage_private_dns_zone_id" {
   description = "Resource ID of the existing Private DNS Zone for Storage (in hub)"
+  type        = string
+}
+
+variable "acr_private_dns_zone_id" {
+  description = "Resource ID of the existing Private DNS Zone for ACR (in hub)"
   type        = string
 }
 
@@ -76,4 +78,10 @@ variable "image_tag" {
   description = "Docker image tag to deploy (injected by CI/CD pipeline)"
   type        = string
   default     = "latest"
+}
+
+variable "purge_protection_enabled" {
+  description = "Enable Key Vault purge protection. Irreversible once enabled. Should be true for prod, false for dev."
+  type        = bool
+  default     = false
 }

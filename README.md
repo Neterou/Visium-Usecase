@@ -14,40 +14,60 @@ Private FastAPI deployment on Azure Container Apps with full network isolation.
 
 ```
 .
-├── main.tf                  # Root module — wires all modules together
+├── main.tf                       # Root module — wires all modules together
 ├── variables.tf
 ├── outputs.tf
 ├── modules/
-│   ├── networking/          # VNet, subnets, NSGs, VNet peering
-│   ├── container_apps/      # ACA environment, app, managed identity, RBAC
-│   ├── keyvault/            # Key Vault + Private Endpoint
-│   ├── storage/             # Storage Account + Private Endpoint
-│   └── acr/                 # Azure Container Registry
+│   ├── networking/               # VNet, subnets, NSGs, VNet peering
+│   ├── container_apps/           # ACA environment, app, managed identity, RBAC
+│   ├── keyvault/                 # Key Vault + Private Endpoint
+│   ├── storage/                  # Storage Account + Private Endpoint
+│   └── acr/                      # Azure Container Registry
 ├── environments/
-│   └── dev/
-│       └── terraform.tfvars # Non-sensitive env-specific values
+│   ├── dev/
+│   │   ├── backend.hcl           # State file: visium-usecase-dev.tfstate
+│   │   └── terraform.tfvars      # Dev-specific values
+│   └── prod/
+│       ├── backend.hcl           # State file: visium-usecase-prod.tfstate
+│       └── terraform.tfvars      # Prod-specific values
 └── .github/
     └── workflows/
-        └── terraform.yml    # GitOps CI/CD — plan on PR, apply on merge
+        └── terraform.yml         # GitOps CI/CD — plan + apply with promotion
 ```
 
-## GitOps Flow
+## GitOps Flow & Promotion Strategy
 
 ```
-PR opened  →  terraform plan  →  output posted as PR comment
-PR merged  →  terraform apply  →  (optional approval gate via GitHub Environments)
+PR opened  →  plan dev               →  output posted as PR comment
+              (quick feedback)
+
+Merge to   →  apply dev              →  dev environment updated
+main          ↓
+              plan prod              →  plan saved as artifact
+              ↓
+              [MANUAL APPROVAL]      →  reviewer sees the exact prod plan
+              ↓
+              apply prod             →  applies the reviewed plan, no drift
 ```
 
-No manual `terraform apply` ever. The pipeline's Service Principal authenticates
-via OIDC federated credentials — no client secrets stored anywhere.
+Single linear pipeline guarantees prod gets the exact code that just succeeded in dev. The prod apply uses the plan artifact generated and reviewed earlier in the same run — no possibility of what-you-saw differing from what-gets-applied.
+
+No manual `terraform apply` ever. The pipeline's Service Principal authenticates via OIDC federated credentials — no client secrets stored anywhere.
 
 ## Terraform State
 
-Remote backend on Azure Blob Storage:
+Remote backend on Azure Blob Storage, with **separate state files per environment**:
 - Storage Account: `stgtfstate001` (pre-provisioned, outside this project)
 - Container: `tfstate`
-- Key: `visium-usecase.tfstate`
+- Dev key: `visium-usecase-dev.tfstate`
+- Prod key: `visium-usecase-prod.tfstate`
 - Locking: Azure Blob lease (built-in, no extra tooling)
+
+Each environment is initialised with its own backend config:
+```bash
+terraform init -backend-config=environments/dev/backend.hcl
+terraform init -backend-config=environments/prod/backend.hcl
+```
 
 ## Sensitive Variables (GitHub Actions Secrets)
 
@@ -59,6 +79,7 @@ Remote backend on Azure Blob Storage:
 | `HUB_VNET_ID` | Resource ID of existing hub VNet |
 | `KV_PRIVATE_DNS_ZONE_ID` | Resource ID of hub Private DNS Zone for Key Vault |
 | `STORAGE_PRIVATE_DNS_ZONE_ID` | Resource ID of hub Private DNS Zone for Storage |
+| `ACR_PRIVATE_DNS_ZONE_ID` | Resource ID of hub Private DNS Zone for ACR |
 
 ## RBAC — Least Privilege
 

@@ -20,6 +20,13 @@ resource "azurerm_storage_account" "main" {
       days = 7
     }
   }
+
+  # Guard against accidental destroy of the media data. Terraform requires this
+  # to be a literal, not a variable. To intentionally destroy: remove this block
+  # in a PR, merge, then run destroy as a separate change.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ── Blob container for media files ────────────────────────────────────────────

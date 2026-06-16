@@ -1,5 +1,12 @@
 name: "Terraform · Infrastructure"
 
+# ── Promotion strategy ────────────────────────────────────────────────────────
+# PR opened/updated  →  plan dev (quick feedback, posted as PR comment)
+# Merge to main      →  apply dev → plan prod → MANUAL APPROVAL → apply prod
+#
+# Single linear pipeline guarantees prod gets the exact code that just succeeded
+# in dev. No tag-triggered prod path that could skip dev validation.
+
 on:
   push:
     branches:
@@ -7,6 +14,7 @@ on:
     paths:
       - "**.tf"
       - "**.tfvars"
+      - "**.hcl"
       - ".github/workflows/terraform.yml"
   pull_request:
     branches:
@@ -14,6 +22,7 @@ on:
     paths:
       - "**.tf"
       - "**.tfvars"
+      - "**.hcl"
       - ".github/workflows/terraform.yml"
 
 permissions:
@@ -25,17 +34,19 @@ env:
   TF_VERSION: "1.7.5"
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   ARM_TENANT_ID:        ${{ secrets.AZURE_TENANT_ID }}
-  ARM_CLIENT_ID:        ${{ secrets.AZURE_CLIENT_ID }}   # Service Principal (federated)
-  # No ARM_CLIENT_SECRET — authentication via OIDC federated credentials only
-  TF_VAR_tenant_id:               ${{ secrets.AZURE_TENANT_ID }}
-  TF_VAR_hub_vnet_id:             ${{ secrets.HUB_VNET_ID }}
+  ARM_CLIENT_ID:        ${{ secrets.AZURE_CLIENT_ID }}
+  TF_VAR_tenant_id:                    ${{ secrets.AZURE_TENANT_ID }}
+  TF_VAR_hub_vnet_id:                  ${{ secrets.HUB_VNET_ID }}
   TF_VAR_keyvault_private_dns_zone_id: ${{ secrets.KV_PRIVATE_DNS_ZONE_ID }}
   TF_VAR_storage_private_dns_zone_id:  ${{ secrets.STORAGE_PRIVATE_DNS_ZONE_ID }}
+  TF_VAR_acr_private_dns_zone_id:      ${{ secrets.ACR_PRIVATE_DNS_ZONE_ID }}
 
 jobs:
-  # ── Plan (on every PR) ────────────────────────────────────────────────────
-  plan:
-    name: "Terraform Plan"
+  # ════════════════════════════════════════════════════════════════════════════
+  # PR FLOW: plan dev only for fast feedback
+  # ════════════════════════════════════════════════════════════════════════════
+  plan-dev-pr:
+    name: "PR · Plan dev"
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
 
@@ -55,16 +66,16 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform Init
-        run: terraform init
-
       - name: Terraform Format check
         run: terraform fmt -check -recursive
+
+      - name: Terraform Init (dev)
+        run: terraform init -backend-config="environments/dev/backend.hcl"
 
       - name: Terraform Validate
         run: terraform validate
 
-      - name: Terraform Plan
+      - name: Terraform Plan (dev)
         id: plan
         run: |
           terraform plan \
@@ -82,7 +93,8 @@ jobs:
             const truncated = planOutput.length > 60000
               ? planOutput.substring(0, 60000) + '\n... (truncated)'
               : planOutput;
-            const body = `## Terraform Plan
+            const status = '${{ steps.plan.outcome }}' === 'success' ? '✅ Plan succeeded' : '❌ Plan failed';
+            const body = `## Terraform Plan — \`dev\`
 
             <details><summary>Show Plan</summary>
 
@@ -92,7 +104,8 @@ jobs:
 
             </details>
 
-            **Result**: ${{ steps.plan.outcome == 'success' && '✅ Plan succeeded' || '❌ Plan failed' }}`;
+            **Result**: ${status}
+            > Prod plan runs after merge, before prod apply.`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -105,12 +118,16 @@ jobs:
         if: steps.plan.outcome == 'failure'
         run: exit 1
 
-  # ── Apply (on merge to main only) ─────────────────────────────────────────
-  apply:
-    name: "Terraform Apply"
+  # ════════════════════════════════════════════════════════════════════════════
+  # MAIN FLOW (after merge): dev apply → prod plan → approval → prod apply
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # Stage 1: Apply to dev
+  apply-dev:
+    name: "Main · Apply dev"
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    environment: production   # requires manual approval gate in GitHub Environments
+    environment: dev
 
     steps:
       - name: Checkout
@@ -128,11 +145,90 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform Init
-        run: terraform init
+      - name: Terraform Init (dev)
+        run: terraform init -backend-config="environments/dev/backend.hcl"
 
-      - name: Terraform Apply
+      - name: Terraform Apply (dev)
         run: |
           terraform apply \
             -var-file="environments/dev/terraform.tfvars" \
             -auto-approve
+
+  # Stage 2: Plan prod — only runs if dev apply succeeded
+  plan-prod:
+    name: "Main · Plan prod"
+    runs-on: ubuntu-latest
+    needs: apply-dev   # dev must succeed first
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (prod)
+        run: terraform init -backend-config="environments/prod/backend.hcl"
+
+      - name: Terraform Plan (prod)
+        run: |
+          terraform plan \
+            -var-file="environments/prod/terraform.tfvars" \
+            -out=tfplan \
+            -no-color | tee plan_output.txt
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: |
+            tfplan
+            plan_output.txt
+          retention-days: 7
+
+  # Stage 3: Apply to prod — requires manual approval via GitHub Environments
+  apply-prod:
+    name: "Main · Apply prod"
+    runs-on: ubuntu-latest
+    needs: plan-prod   # prod plan must succeed first
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production   # MANDATORY approval gate configured in GitHub UI
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (prod)
+        run: terraform init -backend-config="environments/prod/backend.hcl"
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+
+      - name: Terraform Apply (prod)
+        # Apply the exact plan reviewed by the approver — no drift possible
+        # between what was shown and what gets applied.
+        run: terraform apply tfplan

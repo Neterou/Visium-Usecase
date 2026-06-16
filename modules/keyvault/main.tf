@@ -17,8 +17,18 @@ resource "azurerm_key_vault" "main" {
     default_action = "Deny"
   }
 
-  purge_protection_enabled   = true
+  # Purge protection is configurable per environment.
+  # Once enabled it CANNOT be disabled — and a destroyed vault can't be
+  # recreated with the same name for 7 days. Off in dev, on in prod.
+  purge_protection_enabled   = var.purge_protection_enabled
   soft_delete_retention_days = 7
+
+  # Guard against accidental destroy. Terraform requires this to be a literal,
+  # not a variable. To intentionally destroy: remove this block in a PR, merge,
+  # then run destroy as a separate change.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ── Private Endpoint ──────────────────────────────────────────────────────────

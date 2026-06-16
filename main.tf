@@ -8,12 +8,10 @@ terraform {
     }
   }
 
-  backend "azurerm" {
-    resource_group_name  = "rg-tfstate"
-    storage_account_name = "stgtfstate001"
-    container_name       = "tfstate"
-    key                  = "visium-usecase.tfstate"
-  }
+  # Backend configuration is passed via -backend-config flag per environment
+  # so that dev and prod have separate state files.
+  # See: environments/{dev,prod}/backend.hcl
+  backend "azurerm" {}
 }
 
 provider "azurerm" {
@@ -52,7 +50,9 @@ module "acr" {
   location            = var.location
   tags                = var.tags
 
-  acr_name = var.acr_name
+  acr_name                   = var.acr_name
+  private_endpoint_subnet_id = module.networking.misc_subnet_id
+  private_dns_zone_id        = var.acr_private_dns_zone_id
 }
 
 # ── Key Vault ─────────────────────────────────────────────────────────────────
@@ -63,10 +63,11 @@ module "keyvault" {
   location            = var.location
   tags                = var.tags
 
-  key_vault_name      = var.key_vault_name
-  tenant_id           = var.tenant_id
+  key_vault_name             = var.key_vault_name
+  tenant_id                  = var.tenant_id
   private_endpoint_subnet_id = module.networking.pe_subnet_id
   private_dns_zone_id        = var.keyvault_private_dns_zone_id
+  purge_protection_enabled   = var.purge_protection_enabled
 }
 
 # ── Storage Account ───────────────────────────────────────────────────────────
