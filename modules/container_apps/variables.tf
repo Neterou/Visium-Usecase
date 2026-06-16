@@ -1,0 +1,11 @@
+variable "resource_group_name" { type = string }
+variable "location"            { type = string }
+variable "tags"                { type = map(string) }
+variable "aca_env_name"        { type = string }
+variable "aca_app_name"        { type = string }
+variable "aca_subnet_id"       { type = string }
+variable "acr_login_server"    { type = string }
+variable "acr_id"              { type = string }
+variable "key_vault_id"        { type = string }
+variable "storage_account_id"  { type = string }
+variable "image_tag"           { type = string }

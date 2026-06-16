@@ -1,0 +1,46 @@
+data "azurerm_client_config" "current" {}
+
+resource "azurerm_key_vault" "main" {
+  name                       = var.key_vault_name
+  location                   = var.location
+  resource_group_name        = var.resource_group_name
+  tenant_id                  = var.tenant_id
+  sku_name                   = "standard"
+  tags                       = var.tags
+
+  # Disable public access — all traffic must go through Private Endpoint
+  public_network_access_enabled = false
+
+  # Use RBAC instead of legacy access policies (Key Vault Secrets User role)
+  enable_rbac_authorization = true
+
+  network_acls {
+    bypass         = "AzureServices"
+    default_action = "Deny"
+  }
+
+  purge_protection_enabled   = true
+  soft_delete_retention_days = 7
+}
+
+# ── Private Endpoint ──────────────────────────────────────────────────────────
+resource "azurerm_private_endpoint" "keyvault" {
+  name                = "pe-${var.key_vault_name}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  subnet_id           = var.private_endpoint_subnet_id
+  tags                = var.tags
+
+  private_service_connection {
+    name                           = "psc-keyvault"
+    private_connection_resource_id = azurerm_key_vault.main.id
+    subresource_names              = ["vault"]
+    is_manual_connection           = false
+  }
+
+  # Link to the existing Private DNS Zone in the hub for automatic A-record creation
+  private_dns_zone_group {
+    name                 = "pdz-keyvault"
+    private_dns_zone_ids = [var.private_dns_zone_id]
+  }
+}
