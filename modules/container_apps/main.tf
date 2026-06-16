@@ -71,20 +71,16 @@ resource "azurerm_container_app" "fastapi" {
         value = azurerm_user_assigned_identity.app.client_id
       }
 
-      # Secret reference — value pulled from Key Vault by the app at runtime
-      env {
-        name        = "APP_SECRET"
-        secret_name = "app-secret"
-      }
+      # AZURE_CLIENT_ID tells the Azure SDK which Managed Identity to use
+      # when the app calls Key Vault directly at runtime using DefaultAzureCredential.
+      # The app fetches secrets via the Key Vault SDK — no secret value is ever
+      # stored in the Container App definition itself.
     }
   }
 
-  secret {
-    name  = "app-secret"
-    # In production: reference a Key Vault secret via identity
-    # value = "@Microsoft.KeyVault(SecretUri=${var.key_vault_secret_uri})"
-    value = "placeholder-replaced-by-keyvault"
-  }
+  # No secret block needed: the app authenticates to Key Vault at runtime
+  # using the Managed Identity (AZURE_CLIENT_ID env var) and the
+  # Key Vault Secrets User RBAC role assigned above.
 
   ingress {
     external_enabled = false   # internal only — not exposed to internet
